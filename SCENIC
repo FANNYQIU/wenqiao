@@ -1,0 +1,154 @@
+##系统报错改为英文
+Sys.setenv(LANGUAGE = "en")
+##禁止转化为因子
+options(stringsAsFactors = FALSE)
+install.packages("arrow")
+BiocManager::install(c("feather"))
+devtools::install_local("C:/Users/XRX-QWQ/Downloads/aertslab-SCENIC-v1.3.0-3-g7a74341.tar.gz")
+BiocManager::install(c("GENIE3")) # Optional. Can be replaced by GRNBoost
+BiocManager::install(c("zoo", "mixtools", "rbokeh"))
+BiocManager::install(c("DT", "NMF", "ComplexHeatmap", "R2HTML", "Rtsne"))
+BiocManager::install(c("doMC", "doRNG"))
+devtools::install_github("aertslab/SCopeLoomR", build_vignettes = TRUE)
+  install.packages("G:/OneDrive/网页下载/RcisTarget_1.22.0.zip") 
+library(dplyr)
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(SCENIC)
+library(harmony)
+library(feather)
+
+###
+setwd("G:/OneDrive/ICH/NC/SCENIC")
+subcell.id <- sample(colnames(MICNC),1500)##只选了1500个细胞分析-足够，后续分析会回归所有细胞
+scRNAsub <- MICNC[,subcell.id]
+saveRDS(scRNAsub, "scRNAsub.rds")
+scRNAsub=readRDS("scRNAsub.rds")
+exprMat <- as.matrix(scRNAsub@assays$RNA@counts)###提取矩阵
+##设置分析环境
+mydbDIR <- "G:/OneDrive/QWQ/data.library/scenic"
+mydbs <- c( "mm9-tss-centered-10kb-7species.mc9nr.feather")
+names(mydbs) <- c("10kb")
+#初始化 SCENIC 设置,设置分析环境
+data(list="motifAnnotations_mgi_v9", package="RcisTarget")
+motifAnnotations_mgi <- motifAnnotations_mgi_v9
+scenicOptions <- initializeScenic(org="mgi", ####鼠mgi
+                                  nCores=8,
+                                  dbDir=mydbDIR, 
+                                  dbs = mydbs,
+                                  datasetTitle = "os")
+saveRDS(scenicOptions, "int/scenicOptions.rds")
+##==转录调控网络推断==##
+
+##基因过滤
+#过滤标准是基因表达量之和>细胞数*3%，且在1%的细胞中表达
+genesKept <- geneFiltering(exprMat, scenicOptions, 
+                           minCountsPerGene = 3 * 0.01 * ncol(exprMat), ####前提是你关注的基因没有过滤掉
+                           minSamples = ncol(exprMat) * 0.01)
+exprMat_filtered <- exprMat[genesKept, ]
+##计算相关性矩阵
+runCorrelation(exprMat_filtered, scenicOptions)###结果会输出在文件夹
+##TF-Targets相关性回归分析
+exprMat_filtered_log <- log2(exprMat_filtered+1)####取Log2是对方差齐性转换
+#根据表达数据推断潜在的转录因子靶标，使用 GENIE3 或 GRNBoost(R中不能用)，
+#GENIE3 非常耗时且计算量大（在 3-5k 单元的数据集上需要几个小时或几天的时间）
+#，GRNboost可在很短的时间内提供与 GENIE3 类似的结果，这儿使用的R，选择GENIC3
+##nParts参数，是把表达矩阵分成n份分开计算这样内存才够 
+runGenie3(exprMat_filtered_log, scenicOptions, nParts = 10)###,resumePreviousRun =T 
+head("int/1.4_GENIE3_linkList.Rds")
+head(readRDS("int/1.4_GENIE3_linkList.Rds"),n = 40 )
+exprMat_log <- log2(exprMat+1) #log标准话原始矩阵
+scenicOptions <- readRDS("int/scenicOptions.Rds")
+scenicOptions@settings$verbose <- TRUE
+scenicOptions@settings$nCores <- 1
+scenicOptions@settings$seed <- 123
+scenicOptions <- runSCENIC_1_coexNetwork2modules(scenicOptions) #1. 获取共表达模块
+######保存退出再打开step2
+scenicOptions <- runSCENIC_2_createRegulons(scenicOptions)  #2. 获取regulons默认都计算。
+##regulons计算AUC值并进行下游分析
+library(foreach)
+exprMat_all <- as.matrix(MICNC@assays$RNA@counts)
+exprMat_all <- log2(exprMat_all+1)
+####用AUCell对调控单元评分(用上了所有细胞)
+runSCENIC_3_scoreCells(scenicOptions, exprMat=exprMat_all)
+##代码见图90(二进制转换衍生分析)
+runSCENIC_4_aucell_binarize(scenicOptions, exprMat=exprMat_all) 
+save.image("G:/OneDrive/ICH/NC/SCENIC/SCENIC.RData")
+library(dplyr)
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(SCENIC)
+library(harmony)
+library(feather)
+library(SCopeLoomR)
+library(AUCell)
+library(KernSmooth)
+library(RColorBrewer)
+library(plotly)
+library(BiocParallel)
+library(grid)
+library(ComplexHeatmap)
+library(data.table)
+library(ggplot2)
+library(pheatmap)
+library(ggheatmap)
+library(reshape2)
+###
+setwd("G:/OneDrive/ICH/NC/SCENIC")
+###
+regulonAUC <- readRDS("G:/OneDrive/ICH/NC/SCENIC/int/3.4_regulonAUC.Rds")
+regulonAUCThresholds <- readRDS("G:/OneDrive/ICH/NC/SCENIC/int/3.5_AUCellThresholds.Rds")
+cellinfo <- MICNC@meta.data[,c('celltype2','group',"nFeature_RNA","nCount_RNA")]#细胞meta信息
+colnames(cellinfo)=c('celltype2', 'group','nGene' ,'nUMI')
+######计算细胞特异性TF
+cellTypes <-  as.data.frame(subset(cellinfo,select = 'celltype2'))
+selectedResolution <- "celltype2"
+sub_regulonAUC <- regulonAUC
+
+rss <- calcRSS(AUC=getAUC(sub_regulonAUC),
+               cellAnnotation=cellTypes[colnames(sub_regulonAUC),
+                                        selectedResolution])
+
+rss=na.omit(rss)
+rssPlot <- 
+  plotRSS(
+    rss,
+    zThreshold = 1,
+    cluster_columns = FALSE,
+    order_rows = TRUE,
+    thr=0.1,
+    varName = "cellType",
+    col.low = '#330066',
+    col.mid = '#66CC66',
+    col.high = '#FFCC33')
+rssPlot
+ggsave("RASSDOT.pdf",width = 20,height = 25,units = "cm") 
+##################################################
+rss_data <- rssPlot$plot$data
+rss_data<-dcast(rss_data, 
+                Topic~rss_data$cellType,
+                value.var = 'Z')
+rownames(rss_data) <- rss_data[,1]
+rss_data <- rss_data[,-1]
+colnames(rss_data)
+col_ann <- data.frame(group= c(rep("M0",1),
+                               rep("M1",1),
+                               rep("M2",1),
+                               rep("M3",1)))#列注释
+rownames(col_ann) <- colnames(rss_data)
+groupcol <- c("#D9534F", "#96CEB4", "#CBE86B", "#EDE574", "#0099CC")
+names(groupcol) <- c("M0","M1","M2", "M3")
+col <- list(group=groupcol)
+
+text_columns <- sample(colnames(rss_data),0)#不显示列名
+
+p <- ggheatmap(rss_data,color=colorRampPalette(c('#1A5592','white',"#B83D3D"))(100),
+               cluster_rows = T,cluster_cols = F,scale = "row",
+               annotation_cols = col_ann,
+               annotation_color = col,
+               legendName="Relative value",
+               text_show_cols = text_columns)
+p
+ggsave("RASSHEATMAP.pdf",width = 20,height = 25,units = "cm") 
