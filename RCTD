@@ -1,0 +1,355 @@
+##加载包
+library(Seurat)
+library(SeuratData)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(hdf5r)
+library(spacexr)
+library(Matrix)
+library(doParallel)
+library(ggplot2)
+library(ggsci)
+# load in counts matrix空间数据
+for(cv in c("G14C","G14A","G3ZA","G3ZB","H03B","H7DA","G28B")){
+VV <- readRDS(paste0("G:/OneDrive/KZUSE/",cv,".RDS",sep=""))
+counts <- as.matrix(GetAssayData(VV, assay = "Spatial", slot = "counts"))
+coords <- GetTissueCoordinates(VV, scale = NULL)
+nUMI <- VV@meta.data$nCount_Spatial
+names(nUMI)<-rownames(VV@meta.data)
+puck <- SpatialRNA(coords,counts, nUMI)
+barcodes <- colnames(puck@counts)
+p <- plot_puck_continuous(puck, barcodes, puck@nUMI, ylimit = c(0,round(quantile(puck@nUMI,0.9))), 
+                          title ='plot of nUMI', size=2, alpha=0.8) 
+ggsave(paste0(cv,"nUNI.png",sep=""), width=8, height=6, plot=p,bg="white")
+###
+for(cs in unique(ICHNC@meta.data$group)){
+SS= ICHNC[,ICHNC@meta.data$group %in% c(cs)]
+Scounts <- as.matrix(SS@assays$RNA@counts )
+meta_data <- SS@meta.data 
+celltype <- meta_data$celltype
+names(celltype) <- rownames(meta_data)#meta_data$barcode # create celltype namSS list
+celltype <- as.factor(celltype) # convert to factor data type
+nUMI <- meta_data$nCount_RNA
+names(nUMI) <- rownames(meta_data)#meta_data$barcode # create nUMI namSS list
+### Create the Reference object
+reference <- Reference(Scounts, celltype, nUMI)
+####运行RCTD
+myRCTD <- create.RCTD(puck, reference, max_cores = 2)
+myRCTD <- run.RCTD(myRCTD, doublet_mode = 'full')
+saveRDS(myRCTD,paste0(cs,cv,'myRCTD.rds',sep=""))
+####标化细胞比例权重
+barcodes <- colnames(myRCTD@spatialRNA@counts)
+weights <- myRCTD@results$weights
+norm_weights <- normalize_weights(weights)
+# observe weight values
+celltype <- c('Denate', 'Neurogenesis','Cajal_Retzius')
+write.csv(norm_weights,paste0(cs,cv,"predictions.csv",sep=""))
+}
+}
+library(Seurat)
+library(ggplot2)
+library(tidyverse)
+library(dplyr)
+library(patchwork)
+library(Seurat)
+library(SeuratData)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(hdf5r)
+library(spacexr)
+library(Matrix)
+library(doParallel)
+library(ggplot2)
+library(ggsci)
+
+####读取数据
+####"D3G3ZB","D7G14C","D14G28B","E3G3ZA","E7G28B","E14G28B","SalineG14A"
+defined_cols = c('#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#9a6324', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', '#008080', '#e6beff','#911eb4' , '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080')
+
+for(cs in c("G28B")){
+    for(cv in c("D3","D7","D14","E3","E7","E14","Saline")){
+    decon_mtrx = read.csv(paste0(cv,cs,"predictions.csv",sep=""),row.names = 1)
+    ####数据处理
+    cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "max")]
+    decon_df <- decon_mtrx %>%
+      data.frame(check.names = F) %>%
+      tibble::rownames_to_column("barcodes")
+    ###添加比例到meta
+    VVV <- readRDS(paste0("G:/OneDrive/KZUSE/",cs,".RDS",sep=""))
+    VVV@meta.data <- VVV@meta.data %>%
+      tibble::rownames_to_column("barcodes") %>%
+      dplyr::left_join(decon_df, by = "barcodes") %>%
+      tibble::column_to_rownames("barcodes")
+    ###plot dot
+    slice <- names(VVV@images)[1]
+    metadata_ds <- data.frame(VVV@meta.data)
+    colnames(metadata_ds) <- colnames(VVV@meta.data)
+    cell_types_interest <- cell_types_all
+    metadata_ds <- metadata_ds %>% tibble::rownames_to_column("barcodeID") %>%
+      dplyr::mutate(rsum = base::rowSums(.[, cell_types_interest,
+                                           drop = FALSE])) %>% dplyr::filter(rsum != 0) %>%
+      dplyr::select("barcodeID") %>% dplyr::left_join(metadata_ds %>%
+                                                        tibble::rownames_to_column("barcodeID"), by = "barcodeID") %>%
+      tibble::column_to_rownames("barcodeID")
+    
+    spatial_coord <- data.frame(VVV@images[[slice]]@coordinates) %>%
+      tibble::rownames_to_column("barcodeID") %>% dplyr::mutate(imagerow_scaled = imagerow *
+                                                                  VVV@images[[slice]]@scale.factors$lowres, imagecol_scaled = imagecol *
+                                                                  VVV@images[[slice]]@scale.factors$lowres) %>% dplyr::inner_join(metadata_ds %>%
+                                                                                                                                    tibble::rownames_to_column("barcodeID"), by = "barcodeID")
+    write.csv(spatial_coord,paste0(cv,cs,"coord.csv",sep=""))
+
+######################第二天
+
+###读取图片信息，这里读取Spaceranger分析的tissue_lowres_image.png即可
+imgG28B <- (VVV@images[["slice1.1"]]@image)
+###网格化
+img_grobG28B <- grid::rasterGrob(imgG28B, interpolate = FALSE, width = grid::unit(1,
+                                                                                  "npc"), height = grid::unit(1, "npc"))
+#
+
+  spatial_coord=read.csv(paste0(cv,"G28Bcoord.csv",sep=""),row.names = 1)
+  scatterpie_pie <- suppressMessages(ggplot2::ggplot() + ggplot2::annotation_custom(grob = img_grobG28B,
+                                                                                    xmin = 0, xmax = ncol(imgG28B), ymin = 0, ymax = -nrow(imgG28B)) +
+                                       scatterpie::geom_scatterpie(data = spatial_coord, ggplot2::aes(x = imagecol_scaled,
+                                                                                                      y = imagerow_scaled), cols = cell_types_all, color = NA,
+                                                                   alpha = 1, pie_scale = 0.35) +
+                                       ggplot2::scale_y_reverse() + ggplot2::ylim(nrow(imgG28B),
+                                                                                  0) + ggplot2::xlim(0, ncol(imgG28B)) + cowplot::theme_half_open(11,
+                                                                                                                                                  rel_small = 1) + ggplot2::theme_void() + ggplot2::coord_fixed(ratio = 1,xlim = NULL, ylim = NULL, expand = TRUE, clip = "on") + ggplot2::theme(legend.key.size = unit(5,'pt'),legend.title = element_text(size = 6),legend.text = element_text(size = 4)) + scale_fill_manual(values = defined_cols[1:length(cell_types_all)]))
+  
+  pdf(paste(cv,'G28B.pdf',sep = '.'),width = 9 ,height = 7)
+  print(scatterpie_pie)
+  dev.off()
+}
+}###G28B
+for(cs in c("G3ZB")){
+  for(cv in c("D3","D7","D14","E3","E7","E14","Saline")){
+    decon_mtrx = read.csv(paste0(cv,cs,"predictions.csv",sep=""),row.names = 1)
+    ####数据处理
+    cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "max")]
+    decon_df <- decon_mtrx %>%
+      data.frame(check.names = F) %>%
+      tibble::rownames_to_column("barcodes")
+    ###添加比例到meta
+    VVV <- readRDS(paste0("G:/OneDrive/KZUSE/",cs,".RDS",sep=""))
+    VVV@meta.data <- VVV@meta.data %>%
+      tibble::rownames_to_column("barcodes") %>%
+      dplyr::left_join(decon_df, by = "barcodes") %>%
+      tibble::column_to_rownames("barcodes")
+    ###plot dot
+    slice <- names(VVV@images)[1]
+    metadata_ds <- data.frame(VVV@meta.data)
+    colnames(metadata_ds) <- colnames(VVV@meta.data)
+    cell_types_interest <- cell_types_all
+    metadata_ds <- metadata_ds %>% tibble::rownames_to_column("barcodeID") %>%
+      dplyr::mutate(rsum = base::rowSums(.[, cell_types_interest,
+                                           drop = FALSE])) %>% dplyr::filter(rsum != 0) %>%
+      dplyr::select("barcodeID") %>% dplyr::left_join(metadata_ds %>%
+                                                        tibble::rownames_to_column("barcodeID"), by = "barcodeID") %>%
+      tibble::column_to_rownames("barcodeID")
+    
+    spatial_coord <- data.frame(VVV@images[[slice]]@coordinates) %>%
+      tibble::rownames_to_column("barcodeID") %>% dplyr::mutate(imagerow_scaled = imagerow *
+                                                                  VVV@images[[slice]]@scale.factors$lowres, imagecol_scaled = imagecol *
+                                                                  VVV@images[[slice]]@scale.factors$lowres) %>% dplyr::inner_join(metadata_ds %>%
+                                                                                                                                    tibble::rownames_to_column("barcodeID"), by = "barcodeID")
+    write.csv(spatial_coord,paste0(cv,cs,"coord.csv",sep=""))
+    
+    ######################第二天
+    
+    ###读取图片信息，这里读取Spaceranger分析的tissue_lowres_image.png即可
+    imgG3ZB <- (VVV@images[["slice1.6"]]@image)
+    ###网格化
+    img_grobG3ZB <- grid::rasterGrob(imgG3ZB, interpolate = FALSE, width = grid::unit(1,
+                                                                                      "npc"), height = grid::unit(1, "npc"))
+    #
+    
+    spatial_coord=read.csv(paste0(cv,"G3ZBcoord.csv",sep=""),row.names = 1)
+    scatterpie_pie <- suppressMessages(ggplot2::ggplot() + ggplot2::annotation_custom(grob = img_grobG3ZB,
+                                                                                      xmin = 0, xmax = ncol(imgG3ZB), ymin = 0, ymax = -nrow(imgG3ZB)) +
+                                         scatterpie::geom_scatterpie(data = spatial_coord, ggplot2::aes(x = imagecol_scaled,
+                                                                                                        y = imagerow_scaled), cols = cell_types_all, color = NA,
+                                                                     alpha = 1, pie_scale = 0.35) +
+                                         ggplot2::scale_y_reverse() + ggplot2::ylim(nrow(imgG3ZB),
+                                                                                    0) + ggplot2::xlim(0, ncol(imgG3ZB)) + cowplot::theme_half_open(11,
+                                                                                                                                                    rel_small = 1) + ggplot2::theme_void() + ggplot2::coord_fixed(ratio = 1,xlim = NULL, ylim = NULL, expand = TRUE, clip = "on") + ggplot2::theme(legend.key.size = unit(5,'pt'),legend.title = element_text(size = 6),legend.text = element_text(size = 4)) + scale_fill_manual(values = defined_cols[1:length(cell_types_all)]))
+    
+    pdf(paste(cv,'G3ZB.pdf',sep = '.'),width = 9 ,height = 7)
+    print(scatterpie_pie)
+    dev.off()
+  }
+}###G3ZB
+for(cs in c("G3ZA")){
+  for(cv in c("D3","D7","D14","E3","E7","E14","Saline")){
+    decon_mtrx = read.csv(paste0(cv,cs,"predictions.csv",sep=""),row.names = 1)
+    ####数据处理
+    cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "max")]
+    decon_df <- decon_mtrx %>%
+      data.frame(check.names = F) %>%
+      tibble::rownames_to_column("barcodes")
+    ###添加比例到meta
+    VVV <- readRDS(paste0("G:/OneDrive/KZUSE/",cs,".RDS",sep=""))
+    VVV@meta.data <- VVV@meta.data %>%
+      tibble::rownames_to_column("barcodes") %>%
+      dplyr::left_join(decon_df, by = "barcodes") %>%
+      tibble::column_to_rownames("barcodes")
+    ###plot dot
+    slice <- names(VVV@images)[1]
+    metadata_ds <- data.frame(VVV@meta.data)
+    colnames(metadata_ds) <- colnames(VVV@meta.data)
+    cell_types_interest <- cell_types_all
+    metadata_ds <- metadata_ds %>% tibble::rownames_to_column("barcodeID") %>%
+      dplyr::mutate(rsum = base::rowSums(.[, cell_types_interest,
+                                           drop = FALSE])) %>% dplyr::filter(rsum != 0) %>%
+      dplyr::select("barcodeID") %>% dplyr::left_join(metadata_ds %>%
+                                                        tibble::rownames_to_column("barcodeID"), by = "barcodeID") %>%
+      tibble::column_to_rownames("barcodeID")
+    
+    spatial_coord <- data.frame(VVV@images[[slice]]@coordinates) %>%
+      tibble::rownames_to_column("barcodeID") %>% dplyr::mutate(imagerow_scaled = imagerow *
+                                                                  VVV@images[[slice]]@scale.factors$lowres, imagecol_scaled = imagecol *
+                                                                  VVV@images[[slice]]@scale.factors$lowres) %>% dplyr::inner_join(metadata_ds %>%
+                                                                                                                                    tibble::rownames_to_column("barcodeID"), by = "barcodeID")
+    write.csv(spatial_coord,paste0(cv,cs,"coord.csv",sep=""))
+    
+    ######################第二天
+    
+    ###读取图片信息，这里读取Spaceranger分析的tissue_lowres_image.png即可
+    imgG3ZA <- (VVV@images[["slice1.10"]]@image)
+    ###网格化
+    img_grobG3ZA <- grid::rasterGrob(imgG3ZA, interpolate = FALSE, width = grid::unit(1,
+                                                                                      "npc"), height = grid::unit(1, "npc"))
+    #
+    
+    spatial_coord=read.csv(paste0(cv,"G3ZAcoord.csv",sep=""),row.names = 1)
+    scatterpie_pie <- suppressMessages(ggplot2::ggplot() + ggplot2::annotation_custom(grob = img_grobG3ZA,
+                                                                                      xmin = 0, xmax = ncol(imgG3ZA), ymin = 0, ymax = -nrow(imgG3ZA)) +
+                                         scatterpie::geom_scatterpie(data = spatial_coord, ggplot2::aes(x = imagecol_scaled,
+                                                                                                        y = imagerow_scaled), cols = cell_types_all, color = NA,
+                                                                     alpha = 1, pie_scale = 0.35) +
+                                         ggplot2::scale_y_reverse() + ggplot2::ylim(nrow(imgG3ZA),
+                                                                                    0) + ggplot2::xlim(0, ncol(imgG3ZA)) + cowplot::theme_half_open(11,
+                                                                                                                                                    rel_small = 1) + ggplot2::theme_void() + ggplot2::coord_fixed(ratio = 1,xlim = NULL, ylim = NULL, expand = TRUE, clip = "on") + ggplot2::theme(legend.key.size = unit(5,'pt'),legend.title = element_text(size = 6),legend.text = element_text(size = 4)) + scale_fill_manual(values = defined_cols[1:length(cell_types_all)]))
+    
+    pdf(paste(cv,'G3ZA.pdf',sep = '.'),width = 9 ,height = 7)
+    print(scatterpie_pie)
+    dev.off()
+  }
+}###G3ZA
+for(cs in c("G14C")){
+  for(cv in c("D3","D7","D14","E3","E7","E14","Saline")){
+    decon_mtrx = read.csv(paste0(cv,cs,"predictions.csv",sep=""),row.names = 1)
+    ####数据处理
+    cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "max")]
+    decon_df <- decon_mtrx %>%
+      data.frame(check.names = F) %>%
+      tibble::rownames_to_column("barcodes")
+    ###添加比例到meta
+    VVV <- readRDS(paste0("G:/OneDrive/KZUSE/",cs,".RDS",sep=""))
+    VVV@meta.data <- VVV@meta.data %>%
+      tibble::rownames_to_column("barcodes") %>%
+      dplyr::left_join(decon_df, by = "barcodes") %>%
+      tibble::column_to_rownames("barcodes")
+    ###plot dot
+    slice <- names(VVV@images)[1]
+    metadata_ds <- data.frame(VVV@meta.data)
+    colnames(metadata_ds) <- colnames(VVV@meta.data)
+    cell_types_interest <- cell_types_all
+    metadata_ds <- metadata_ds %>% tibble::rownames_to_column("barcodeID") %>%
+      dplyr::mutate(rsum = base::rowSums(.[, cell_types_interest,
+                                           drop = FALSE])) %>% dplyr::filter(rsum != 0) %>%
+      dplyr::select("barcodeID") %>% dplyr::left_join(metadata_ds %>%
+                                                        tibble::rownames_to_column("barcodeID"), by = "barcodeID") %>%
+      tibble::column_to_rownames("barcodeID")
+    
+    spatial_coord <- data.frame(VVV@images[[slice]]@coordinates) %>%
+      tibble::rownames_to_column("barcodeID") %>% dplyr::mutate(imagerow_scaled = imagerow *
+                                                                  VVV@images[[slice]]@scale.factors$lowres, imagecol_scaled = imagecol *
+                                                                  VVV@images[[slice]]@scale.factors$lowres) %>% dplyr::inner_join(metadata_ds %>%
+                                                                                                                                    tibble::rownames_to_column("barcodeID"), by = "barcodeID")
+    write.csv(spatial_coord,paste0(cv,cs,"coord.csv",sep=""))
+    
+    ######################第二天
+    
+    ###读取图片信息，这里读取Spaceranger分析的tissue_lowres_image.png即可
+    imgG14C <- (VVV@images[["slice1.2"]]@image)
+    ###网格化
+    img_grobG14C <- grid::rasterGrob(imgG14C, interpolate = FALSE, width = grid::unit(1,
+                                                                                      "npc"), height = grid::unit(1, "npc"))
+    #
+    
+    spatial_coord=read.csv(paste0(cv,"G14Ccoord.csv",sep=""),row.names = 1)
+    scatterpie_pie <- suppressMessages(ggplot2::ggplot() + ggplot2::annotation_custom(grob = img_grobG14C,
+                                                                                      xmin = 0, xmax = ncol(imgG14C), ymin = 0, ymax = -nrow(imgG14C)) +
+                                         scatterpie::geom_scatterpie(data = spatial_coord, ggplot2::aes(x = imagecol_scaled,
+                                                                                                        y = imagerow_scaled), cols = cell_types_all, color = NA,
+                                                                     alpha = 1, pie_scale = 0.35) +
+                                         ggplot2::scale_y_reverse() + ggplot2::ylim(nrow(imgG14C),
+                                                                                    0) + ggplot2::xlim(0, ncol(imgG14C)) + cowplot::theme_half_open(11,
+                                                                                                                                                    rel_small = 1) + ggplot2::theme_void() + ggplot2::coord_fixed(ratio = 1,xlim = NULL, ylim = NULL, expand = TRUE, clip = "on") + ggplot2::theme(legend.key.size = unit(5,'pt'),legend.title = element_text(size = 6),legend.text = element_text(size = 4)) + scale_fill_manual(values = defined_cols[1:length(cell_types_all)]))
+    
+    pdf(paste(cv,'G14C.pdf',sep = '.'),width = 9 ,height = 7)
+    print(scatterpie_pie)
+    dev.off()
+  }
+}###G14C
+for(cs in c("G14A")){
+  for(cv in c("D3","D7","D14","E3","E7","E14","Saline")){
+    decon_mtrx = read.csv(paste0(cv,cs,"predictions.csv",sep=""),row.names = 1)
+    ####数据处理
+    cell_types_all <- colnames(decon_mtrx)[which(colnames(decon_mtrx) != "max")]
+    decon_df <- decon_mtrx %>%
+      data.frame(check.names = F) %>%
+      tibble::rownames_to_column("barcodes")
+    ###添加比例到meta
+    VVV <- readRDS(paste0("G:/OneDrive/KZUSE/",cs,".RDS",sep=""))
+    VVV@meta.data <- VVV@meta.data %>%
+      tibble::rownames_to_column("barcodes") %>%
+      dplyr::left_join(decon_df, by = "barcodes") %>%
+      tibble::column_to_rownames("barcodes")
+    ###plot dot
+    slice <- names(VVV@images)[1]
+    metadata_ds <- data.frame(VVV@meta.data)
+    colnames(metadata_ds) <- colnames(VVV@meta.data)
+    cell_types_interest <- cell_types_all
+    metadata_ds <- metadata_ds %>% tibble::rownames_to_column("barcodeID") %>%
+      dplyr::mutate(rsum = base::rowSums(.[, cell_types_interest,
+                                           drop = FALSE])) %>% dplyr::filter(rsum != 0) %>%
+      dplyr::select("barcodeID") %>% dplyr::left_join(metadata_ds %>%
+                                                        tibble::rownames_to_column("barcodeID"), by = "barcodeID") %>%
+      tibble::column_to_rownames("barcodeID")
+    
+    spatial_coord <- data.frame(VVV@images[[slice]]@coordinates) %>%
+      tibble::rownames_to_column("barcodeID") %>% dplyr::mutate(imagerow_scaled = imagerow *
+                                                                  VVV@images[[slice]]@scale.factors$lowres, imagecol_scaled = imagecol *
+                                                                  VVV@images[[slice]]@scale.factors$lowres) %>% dplyr::inner_join(metadata_ds %>%
+                                                                                                                                    tibble::rownames_to_column("barcodeID"), by = "barcodeID")
+    write.csv(spatial_coord,paste0(cv,cs,"coord.csv",sep=""))
+    
+    ######################第二天
+    
+    ###读取图片信息，这里读取Spaceranger分析的tissue_lowres_image.png即可
+    imgG14A <- (VVV@images[["slice1.5"]]@image)
+    ###网格化
+    img_grobG14A <- grid::rasterGrob(imgG14A, interpolate = FALSE, width = grid::unit(1,
+                                                                                      "npc"), height = grid::unit(1, "npc"))
+    #
+    
+    spatial_coord=read.csv(paste0(cv,"G14Acoord.csv",sep=""),row.names = 1)
+    scatterpie_pie <- suppressMessages(ggplot2::ggplot() + ggplot2::annotation_custom(grob = img_grobG14A,
+                                                                                      xmin = 0, xmax = ncol(imgG14A), ymin = 0, ymax = -nrow(imgG14A)) +
+                                         scatterpie::geom_scatterpie(data = spatial_coord, ggplot2::aes(x = imagecol_scaled,
+                                                                                                        y = imagerow_scaled), cols = cell_types_all, color = NA,
+                                                                     alpha = 1, pie_scale = 0.35) +
+                                         ggplot2::scale_y_reverse() + ggplot2::ylim(nrow(imgG14A),
+                                                                                    0) + ggplot2::xlim(0, ncol(imgG14A)) + cowplot::theme_half_open(11,
+                                                                                                                                                    rel_small = 1) + ggplot2::theme_void() + ggplot2::coord_fixed(ratio = 1,xlim = NULL, ylim = NULL, expand = TRUE, clip = "on") + ggplot2::theme(legend.key.size = unit(5,'pt'),legend.title = element_text(size = 6),legend.text = element_text(size = 4)) + scale_fill_manual(values = defined_cols[1:length(cell_types_all)]))
+    
+    pdf(paste(cv,'G14A.pdf',sep = '.'),width = 9 ,height = 7)
+    print(scatterpie_pie)
+    dev.off()
+  }
+}###G14A
