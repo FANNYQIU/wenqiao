@@ -1,0 +1,264 @@
+###环境准备
+library(monocle)
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(DESeq2)
+setwd("G:/OneDrive/ICH/NC/MONO")
+###
+Idents(MICNC) <- "celltype2"
+#读取前面保存的seurat对象文件
+#assay数据提取
+combin.data=MICNC
+#单胞count文件、细MONO#单胞count文件、细胞类型注释文件、基因注释文件
+expression_matrix = combin.data@assays$RNA@counts
+cell_metadata <- data.frame(group = combin.data[['group']],clusters = Idents(combin.data))
+gene_annotation <- data.frame(gene_short_name = rownames(expression_matrix), stringsAsFactors = F) 
+rownames(gene_annotation) <- rownames(expression_matrix)
+#####新建CellDataSet object
+pd <- new("AnnotatedDataFrame", data = cell_metadata)
+fd <- new("AnnotatedDataFrame", data = gene_annotation)
+HSMM <- newCellDataSet(expression_matrix,
+                       phenoData = pd,
+                       featureData = fd,
+                       expressionFamily=negbinomial.size())
+####
+HSMM<- detectGenes(HSMM, min_expr = 1) 
+HSMM<- HSMM[fData(HSMM)$num_cells_expressed > 10, ]
+#评估SizeFactors
+HSMM <- estimateSizeFactors(HSMM)
+#计算离散度
+HSMM <- estimateDispersions(HSMM)
+#计算差异
+diff_test_res1 <- differentialGeneTest(HSMM,fullModelFormulaStr = '~clusters', cores = 4)
+#选择差异基因
+ordering_genes <- subset(diff_test_res1, pval < 0.05)[,'gene_short_name']
+#基因过滤
+HSMM <- setOrderingFilter(HSMM, ordering_genes)
+plot_ordering_genes(HSMM) 
+plot_pc_variance_explained(HSMM, return_all = F)
+#数据降维
+HSMM <- reduceDimension(HSMM, max_components = 2, num_dim =20,
+                       reduction_method = 'tSNE', verbose = T)
+HSMM <- clusterCells(HSMM, num_clusters = 5) 
+plot_cell_clusters(HSMM, 1, 2 )
+table(pData(HSMM)$Cluster) 
+colnames(pData(HSMM))
+####拟时序与Seurat对应挑显著基因
+table(pData(HSMM)$Cluster)
+table(pData(HSMM)$Cluster,pData(HSMM)$cluster)
+pData(HSMM)$Cluster=pData(HSMM)$cluster
+diff_test_res <- differentialGeneTest(HSMM, fullModelFormulaStr = "~Cluster")
+sig_genes <- subset(diff_test_res, qval < 0.1)
+sig_genes=sig_genes[order(sig_genes$pval),]
+head(sig_genes[,c("gene_short_name", "pval", "qval")] ) 
+cg=as.character(head(sig_genes$gene_short_name)) 
+# 第一步: 挑选合适的基因
+ordering_genes <- row.names (subset(diff_test_res, pval < 0.01))
+HSMM <- setOrderingFilter(HSMM, ordering_genes)
+#第二步降维
+HSMM <- reduceDimension(HSMM, max_components = 2,
+                       method = 'DDRTree')
+# 第三步: 对细胞进行排序
+HSMM=orderCells(HSMM,root_state = 3)
+write.table(ordering_genes,file="MONOD.DEG.xls",col.names=T,row.names=F,sep="\t",quote=F)
+saveRDS(HSMM,"./MONOMICD.RDS")
+# ###分支计算
+#会返回每个基因的显著性，显著的基因就是那些随不同branch变化的基因
+#这一步很慢24H
+methods <- c("duplicate", "expression", "cluster")
+results <- lapply(methods, function(method) {
+  BEAM=BEAM(cds, branch_point = 1, progenitor_method = method)
+  saveRDS(BEAM, file =paste (method,"BEAM_res.rds",sep = ""))
+  })
+BEAM_res <- BEAM_res[order(BEAM_res$qval),]
+BEAM_res <- BEAM_res[,c("gene_short_name", "pval", "qval")]
+head(BEAM_res)
+table(BEAM_res$qval < 1e-4)
+plot_genes_branched_heatmap(my_cds_subset[row.names(subset(BEAM_res, qval < 1e-4)),],
+                            branch_point = 1,
+                            num_clusters = 4,
+                            cores = 8,
+                            use_gene_short_name = TRUE,
+                            show_rownames = TRUE)
+                            
+###环境准备
+library(monocle)
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(DESeq2)
+######
+setwd("G:/OneDrive/ICH/NC/MONO")
+cds <- readRDS("G:/OneDrive/ICH/NC/MONO/MONOMICD.RDS")
+#可视化细胞分化轨迹
+plot_cell_trajectory(cds, color_by = "Cluster")
+plot_cell_trajectory(cds, color_by = "State")
+###可视化基因时序图
+pdf("monocle.pseudotime.pdf",width = 7,height = 7) 
+plot_cell_trajectory(cds,color_by="Pseudotime", size=1,show_backbone=TRUE) 
+dev.off()
+####分化中的基因情况
+pdf("monocle.celltype.pdf",width = 7,height = 7) 
+plot_cell_trajectory(cds,color_by="Cluster", size=1,show_backbone=TRUE) 
+dev.off()
+####分化中的基因情况
+pdf("monocle.State.pdf",width = 7,height = 7) 
+plot_cell_trajectory(cds,color_by="State", size=1,show_backbone=TRUE) 
+dev.off()
+####
+pdf("state.faceted.pdf",width = 10,height = 7) 
+plot_cell_trajectory(cds, color_by = "Cluster") + facet_wrap("~Cluster", nrow = 1) 
+dev.off()
+#####
+pdf("两种轨迹图.pdf",width = 10,height = 7) 
+p1 <- plot_cell_trajectory(cds, x = 1, y = 2, color_by = "Cluster") + 
+  theme(legend.position='none',panel.border = element_blank())  #去掉第一个的legend 
+  
+p2 <- plot_complex_cell_trajectory(cds, x = 1, y = 2, 
+                                   color_by = "Cluster")+ 
+  theme(legend.title = element_blank()) 
+p1|p2
+dev.off()
+#####
+library(ggpubr) 
+df <- pData(cds)
+## pData(cds)取出的是cds对象中cds@phenoData@data的内容 
+View(df) 
+ggplot(df, aes(Pseudotime, colour = Cluster, fill=Cluster)) + 
+  geom_density(bw=0.5,size=1,alpha = 0.5)+theme_classic2()
+###环境准备
+BiocManager::install(c("org.Mm.eg.db"))
+install.packages("igraph")
+library(monocle)
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(DESeq2)
+######
+setwd("G:/OneDrive/ICH/NC/MONO")
+cds <- readRDS("G:/OneDrive/ICH/NC/MONO/MONOMICD.RDS")
+#会返回每个基因的显著性，显著的基因就是那些随不同branch变化的基因
+#这一步很慢
+methods <- c("duplicate", "expression", "cluster"))
+results <- lapply(methods, function(method) {
+  BEAM=BEAM(cds, branch_point = 1, progenitor_method = method)
+  saveRDS(BEAM, file =paste (method,"BEAM.rds",sep = ""))
+  })
+BEAM <- BEAM[order(BEAM$qval),]
+BEAM <- BEAM[,c("gene_short_name", "pval", "qval")]
+BEAM <-(subset(BEAM, qval < 1e-10))
+write.csv(BEAM,"BEAM.csv")
+
+tmp1=plot_genes_branched_heatmap(cds[row.names(subset(BEAM, qval < 1e-16)),],
+                            branch_point = 1,
+                            num_clusters = 4,
+                            cores = 16,
+                            hmcols = colorRampPalette(rev(brewer.pal(9, "PRGn")))(62),
+                            branch_colors = c("#979797", "#F05662", "#7990C8"), #pre-branch, Cell 
+                            use_gene_short_name = TRUE,
+                            show_rownames = F,return_heatmap = T #是否返回一些重要信息
+                            )
+pdf('BAMHEATMAP.pdf',width = 4 ,height =6)
+tmp1$ph_res
+dev.off()
+####
+gene_group=tmp1$annotation_row
+gene_group$gene=rownames(gene_group)
+write.csv(gene_group,"gene_group.csv")
+library(clusterProfiler)
+library(org.Mm.eg.db)
+####GO
+allcluster_go=data.frame()
+for (i in unique(gene_group$Cluster)) {
+  small_gene_group=filter(gene_group,gene_group$Cluster==i)
+  df_name=bitr(small_gene_group$gene, fromType="SYMBOL", 
+               toType=c("ENTREZID"), OrgDb="org.Mm.eg.db")
+  go <- enrichGO(gene= unique(df_name$ENTREZID),
+                 OrgDb = org.Mm.eg.db,
+                 keyType = 'ENTREZID',
+                 ont  = "BP",
+                 pAdjustMethod = "BH",
+                 pvalueCutoff  = 0.001,
+                 qvalueCutoff  = 0.001,
+                 readable  = TRUE)
+  go_res=go@result
+  if (dim(go_res)[1] != 0) {
+    go_res$cluster=i
+    allcluster_go=rbind(allcluster_go,go_res)
+  }
+}
+write.csv(allcluster_go,"GOBAMHEATMAP.csv")
+####KEGG富集
+allcluster_kegg=data.frame()
+for (i in unique(gene_group$Cluster)) {
+  small_gene_group=filter(gene_group,gene_group$Cluster==i)
+  df_name=bitr(small_gene_group$gene, fromType="SYMBOL", 
+               toType=c("ENTREZID"), OrgDb="org.Mm.eg.db")
+KEGG <- enrichKEGG(gene= unique(df_name$ENTREZID),
+                 keyType = 'ENTREZID',
+                 pAdjustMethod = "BH",
+                 pvalueCutoff  = 0.05,
+                 qvalueCutoff  = 0.2)
+  KEGG_res=KEGG@result
+  if (dim(KEGG_res)[1] != 0) {
+    KEGG_res$cluster=i
+    allcluster_kegg=rbind(allcluster_kegg,KEGG_res)
+  }
+}
+head(allcluster_kegg[,c("ID","Description","qvalue","cluster")])
+write.csv(allcluster_kegg,"KEGGBAMHEATMAP.csv")
+###分支点分析得到的分支特异的基因（第6步BEAM函数得到的基因）
+test_genes=c("Ptn","Ikzf1",)
+pdf("genes_branched_pseudotime.pdf",width = 9,height = 4)
+plot_genes_branched_pseudotime(cds[test_genes,],
+                               branch_point = 1,
+                               color_by = "group",
+                               cell_size=2,
+                               ncol = 2)
+dev.off()
+###环境准备
+library(monocle)
+library(tidyverse)
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(DESeq2)
+
+setwd("G:/OneDrive/ICH/NC/MONO")
+library(monocle)
+library(tidyverse)
+library(ggridges)
+library(RColorBrewer)
+library(scales)
+
+plotdf=pData(cds)
+
+ggplot(plotdf, aes(x=Pseudotime,y=Cluster,fill=Cluster))+
+  geom_density_ridges(scale=1) +
+  geom_vline(xintercept = c(5,10),linetype=2)+
+  scale_y_discrete("")+
+  theme_minimal()+
+  theme(
+    panel.grid = element_blank()
+  )
+ggsave("tmp1.pdf",width = 13,height = 7,units = "cm")
+ggplot(plotdf, aes(x=Pseudotime,y=Cluster,fill = stat(x))) +
+  geom_density_ridges_gradient(scale=1) +
+  geom_vline(xintercept = c(5,10),linetype=2)+
+  scale_fill_gradientn(name="Pseudotime",colors = colorRampPalette(c("#122E47","#9CCFEF")))(62))+
+  scale_y_discrete("")+
+  theme_minimal()+
+  theme(
+    panel.grid = element_blank()
+  )
+ggsave("tmp2.pdf",width = 13,height = 7,units = "cm")
+
+
