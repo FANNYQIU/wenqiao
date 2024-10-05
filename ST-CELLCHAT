@@ -1,0 +1,92 @@
+options(stringsAsFactors = FALSE)
+library(CellChat)
+library(Seurat)
+library(tidyverse)
+library(viridis)
+library(RColorBrewer)
+#载入数据
+setwd("G:/OneDrive/ICH/NC/KZ/CHAT/")
+for(ST in c("G14C","G14A","G3ZA","G3ZB","H03B","H7DA","G28B")){
+Brain_ST <- readRDS(paste("G:/OneDrive/ICH/NC/KZ/RDS/",ST,".RDS",sep=""))
+#查看数据情况
+Brain_ST@meta.data$celltype <- paste("C",Brain_ST$seurat_clusters,sep = "")
+Idents(Brain_ST) <- "celltype"
+head(Brain_ST)
+#可定义颜色
+color.use <- scPalette(nlevels(Brain_ST))
+names(color.use) <- levels(Brain_ST)
+pdf(paste(ST,"ST.pdf",sep=""), width = 8, height = 6,bg = "transparent",colormodel = "cmyk") 
+SpatialDimPlot(Brain_ST, label = TRUE, label.size = 3, cols = color.use)
+dev.off()
+#矩阵信息
+data.input = Seurat::GetAssayData(Brain_ST, slot = "data", assay = "SCT") 
+#meta信息
+meta = data.frame(labels = Idents(Brain_ST), #名字自定义
+                  row.names = names(Idents(Brain_ST))) # manually create a dataframe consisting of the cell labels
+unique(meta$labels)
+# 空间图像信息
+spatial.locs = Seurat::GetTissueCoordinates(Brain_ST, scale = NULL, 
+                                            cols = c("imagerow", "imagecol")) 
+# Scale factors and spot diameters 信息 
+scale.factors = jsonlite::fromJSON(txt = file.path("G:/OneDrive/ICH/DATA--/空转/20230209-V11L12-091-A1-3D-Z-1-outs/spatial", 'scalefactors_json.json'))
+scale.factors = list(spot.diameter = 65, spot = scale.factors$spot_diameter_fullres, # these two information are required
+                     fiducial = scale.factors$fiducial_diameter_fullres, hires = scale.factors$tissue_hires_scalef, lowres = scale.factors$tissue_lowres_scalef # these three information are not required
+)
+#创建cellchat对象
+
+cellchat <- createCellChat(object = data.input, 
+                           meta = meta, 
+                           group.by = "labels", #前面的meta ，定义的名字是labels
+                           datatype = "spatial", ###
+                           coordinates = spatial.locs, 
+                           scale.factors = scale.factors)
+####设置数据库
+CellChatDB <- CellChatDB.mouse # use CellChatDB.mouse if running on mouse data
+
+#用部分 use a subset of CellChatDB for cell-cell communication analysis
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling", key = "annotation") # use Secreted Signaling
+# 用全部use all CellChatDB for cell-cell communication analysis
+#CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+# subset the expression data of signaling genes for saving computation cost
+cellchat <- subsetData(cellchat) # This step is necessary even if using the whole database
+future::plan("multisession", workers = 1) #笔记本可以选1
+##识别过表达基因
+cellchat <- identifyOverExpressedGenes(cellchat)
+#识别过表达配体受体对
+cellchat <- identifyOverExpressedInteractions(cellchat)
+#####推断细胞网络
+cellchat <- computeCommunProb(cellchat, 
+                              type = "truncatedMean", trim = 0.1, ###"triMean"
+                              distance.use = F, 
+                              scale.distance = 0.01)
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+###计算cell-cell community
+#计算每个信号通路相关的所有配体-受体相互作用的通信结果
+cellchat <- computeCommunProbPathway(cellchat)
+#计算整合的细胞类型之间通信结果
+cellchat <- aggregateNet(cellchat)
+df.net <- subsetCommunication(cellchat)
+write.csv(df.net, paste(ST,"ST2.CSV",sep = ""))
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+saveRDS(cellchat,paste(ST,"ST2.RDS",sep = ""))
+###groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+pdf(paste(ST,"通讯次数和强度.pdf",sep=""), width = 14, height = 8,bg = "transparent",colormodel = "cmyk") 
+netVisual_circle(cellchat@net$count, vertex.weight = rowSums(cellchat@net$count), 
+                 weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = rowSums(cellchat@net$weight), 
+                 weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+dev.off()
+# Spatial plot
+cellchat@netP$pathways
+pathways.show <- c("PTN")
+levels(cellchat@idents) 
+pdf(paste(ST,"PTN通讯.pdf",sep=""), width = 10, height = 8,bg = "transparent",colormodel = "cmyk") 
+par(mfrow=c(1,1))
+netVisual_aggregate(cellchat, signaling = pathways.show, layout = "spatial", 
+                    edge.width.max = 2, vertex.size.max = 1, 
+                    alpha.image = 0.2, vertex.label.cex = 3.5)
+dev.off()
+}
