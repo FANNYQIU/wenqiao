@@ -1,0 +1,194 @@
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(patchwork)
+library(CellChat)
+library(ggalluvial)
+library(data.table)
+library(ggsci)
+#创建cellchat对象
+setwd("G:/OneDrive/ICH/NC/CHAT")
+##提取表达矩阵和细胞分类信息
+
+for(i in unique(ICHNC@meta.data$group)){
+  MO=ICHNC[,ICHNC@meta.data$group%in% c(i)]
+  data.input <- GetAssayData(MO, assay = "RNA", slot = "data")
+  identity <- subset(MO@meta.data, select = "subclass")####提取Celltype；分析的不同细胞类型的互作
+  cellchat <- createCellChat(object = data.input, meta = identity,  group.by = "subclass")
+  ####可选CellChatDB.human, CellChatDB.mouse
+  CellChatDB <- CellChatDB.mouse
+  ##下一步不出图的时候运行 dev.new()
+  showDatabaseCategory(CellChatDB)
+  ##提取
+  colnames(CellChatDB$interaction)
+  CellChatDB$interaction[1:4,1:4]
+  
+  ########在CellChat中，我们还可以先择特定的信息描述细胞间的相互作用，
+  ##可以理解为从特定的侧面来刻画细胞间相互作用，比用一个大的配体库又精细了许多。
+  ##查看可以选择的侧面
+  # use Secreted Signaling for cell-cell communication analysis
+  CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling" )
+  cellchat@DB <- CellChatDB.use # set the used database in the object
+  #对表达数据进行预处理
+  ##将信号基因的表达数据进行子集化，以节省计算成本
+  cellchat <- subsetData(cellchat)
+  # 识别过表达基因
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  # 识别配体-受体对
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  # 将配体、受体投射到PPI网络(选择)
+  cellchat <- projectData(cellchat, PPI.mouse)
+  ##相互作用推断
+  ## 1、计算通信概率推断细胞互作的通信网络
+  cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+  ###如果特定细胞群中只有少数细胞，则过滤掉细胞间的通信
+  cellchat <- filterCommunication(cellchat, min.cells = 3)
+  #提取推断出的细胞互作的通信网络数据框，我们提供了一个subsetCommunication 函数，
+  #可以方便地访问感兴趣的推断的细胞间通信。
+  ##返回一个数据框，包含所有推断的配体/受体级别的细胞-细胞通信。设置slot.name = "netP"以访问信令路径级别的推断通信
+  df.net <- subsetCommunication(cellchat)
+  write.csv(df.net, paste(i,"CHS.CSV",sep = ""))
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+  saveRDS(cellchat,paste(i,"CHS.RDS",sep = ""))
+}
+##########
+
+for(i in unique(ICHNC@meta.data$group)){
+  MO=ICHNC[,ICHNC@meta.data$group%in% c(i)]
+  data.input <- GetAssayData(MO, assay = "RNA", slot = "data")
+  identity <- subset(MO@meta.data, select = "subclass")####提取Celltype；分析的不同细胞类型的互作
+  cellchat <- createCellChat(object = data.input, meta = identity,  group.by = "subclass")
+  ####可选CellChatDB.human, CellChatDB.mouse
+  CellChatDB <- CellChatDB.mouse
+  ##下一步不出图的时候运行 dev.new()
+  showDatabaseCategory(CellChatDB)
+  ##提取
+  colnames(CellChatDB$interaction)
+  CellChatDB$interaction[1:4,1:4]
+  
+  ########在CellChat中，我们还可以先择特定的信息描述细胞间的相互作用，
+  ##可以理解为从特定的侧面来刻画细胞间相互作用，比用一个大的配体库又精细了许多。
+  ##查看可以选择的侧面
+  # use Secreted Signaling for cell-cell communication analysis
+  CellChatDB.use <- subsetDB(CellChatDB, search = "Cell-Cell Contact" )
+  cellchat@DB <- CellChatDB.use # set the used database in the object
+  #对表达数据进行预处理
+  ##将信号基因的表达数据进行子集化，以节省计算成本
+  cellchat <- subsetData(cellchat)
+  # 识别过表达基因
+  cellchat <- identifyOverExpressedGenes(cellchat)
+  # 识别配体-受体对
+  cellchat <- identifyOverExpressedInteractions(cellchat)
+  # 将配体、受体投射到PPI网络(选择)
+  cellchat <- projectData(cellchat, PPI.mouse)
+  ##相互作用推断
+  ## 1、计算通信概率推断细胞互作的通信网络
+  cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+  ###如果特定细胞群中只有少数细胞，则过滤掉细胞间的通信
+  cellchat <- filterCommunication(cellchat, min.cells = 3)
+  #提取推断出的细胞互作的通信网络数据框，我们提供了一个subsetCommunication 函数，
+  #可以方便地访问感兴趣的推断的细胞间通信。
+  ##返回一个数据框，包含所有推断的配体/受体级别的细胞-细胞通信。设置slot.name = "netP"以访问信令路径级别的推断通信
+  df.net <- subsetCommunication(cellchat)
+  write.csv(df.net, paste(i,"CHC.CSV",sep = ""))
+  cellchat <- computeCommunProbPathway(cellchat)
+  cellchat <- aggregateNet(cellchat)
+  cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+  saveRDS(cellchat,paste(i,"CHC.RDS",sep = ""))
+}
+#加载包创建目录
+library(CellChat)
+library(patchwork)
+###加载cellchat对象
+object.list <- list(Saline =SalineCHS,E3D=E3CHS,D3D =D3CHS,
+                    E7D =E7CHS,E14D =E14CHS, D7D =D7CHS,D14D =D14CHS)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+###总数和交互强度
+gg1 <- compareInteractions(cellchat, show.legend = F,group = c(1,2,3,4,5,6,7) )
+gg2 <- compareInteractions(cellchat, show.legend = F,group = c(1,2,3,4,5,6,7), measure = "weight")
+gg1 + gg2
+ggsave("总数和强度2.pdf", width = 14, height = 8)
+###圆图差异
+pdf("圈图比较.pdf", width = 14, height = 8,bg = "transparent",colormodel = "cmyk") 
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = T,measure = c("weight"),comparison = c(2, 1),title.name ="ICH3 Vs Saline")
+netVisual_diffInteraction(cellchat, weight.scale = T,measure = c("weight"),comparison = c(2, 5),title.name ="ICH3 Vs EXO")
+dev.off()
+###HEATMAP
+pdf("热图比较G1.pdf", width = 7, height = 5,bg = "transparent",colormodel = "cmyk")
+gg1 <- netVisual_heatmap(cellchat,measure = c("weight"),comparison = c(4, 1),,cluster.rows = T,title.name ="ICH7 Vs exo7")
+gg1
+dev.off()
+pdf("热图比较ed14.pdf", width = 7, height = 5,bg = "transparent",colormodel = "cmyk")
+gg2 <- netVisual_heatmap(cellchat,measure = c("weight"),comparison = c(4, 7),cluster.rows = T,cluster.cols =F, title.name ="ICH14 Vs EXO")
+gg2
+dev.off()
+####不同细胞不同颜色圈图
+weight.max <- getMaxWeight(object.list, attribute = c("idents","weight"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+pdf(paste(i,"alllchat.pdf",sep = ""), width = 10, height = 10)
+netVisual_circle(object.list[[i]]@net$weight, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Number of interactions - ", names(object.list)[i]))
+dev.off()
+}
+??rankNet
+gg1 <- rankNet(cellchat,  measure = c("weight"),mode = "comparison", 
+               sources.use =c("M0"),comparison = c(1,2,3,4,5,6),stacked = F, do.stat = TRUE,color.use=c("#B6CCD7","#F4A2A3","#7CA878","#8952A0","#6B70B0","#20ACBD", "#E57C22"))
+gg1          
+ggsave("RANKCOM.pdf", width = 14, height = 8)
+###输出热图
+library(ComplexHeatmap)
+pdf("outgoingm全.pdf", width = 12, height = 5,bg = "transparent",colormodel = "cmyk")
+i = 1
+# combining all the identified signaling pathways from different datasets 
+pathway.union <- union( object.list[[i+1]]@netP$pathways,object.list[[i+2]]@netP$pathways)
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6)
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6)
+ht3 = netAnalysis_signalingRole_heatmap(object.list[[i+4]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+2], width = 5, height = 6)
+draw(ht1+ht2+ht3, ht_gap = unit(0.5, "cm"))
+dev.off()
+####输入热图
+pdf("incoming全.pdf", width = 12, height = 5,bg = "transparent",colormodel = "cmyk")
+i = 1
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6, color.heatmap = "GnBu")
+ht3 = netAnalysis_signalingRole_heatmap(object.list[[i+4]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i+2], width = 5, height = 6, color.heatmap = "GnBu")
+draw(ht1+ht2+ht3, ht_gap = unit(0.5, "cm"))
+dev.off()
+####全信号热图
+pdf("OVERALL全.pdf", width = 12, height = 5,bg = "transparent",colormodel = "cmyk")
+i = 1
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "all", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6, color.heatmap = "OrRd")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "all", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6, color.heatmap = "OrRd")
+ht3 = netAnalysis_signalingRole_heatmap(object.list[[i+4]], pattern = "all", signaling = pathway.union, title = names(object.list)[i+2], width = 5, height = 6, color.heatmap = "OrRd")
+draw(ht1 + ht2+ht3, ht_gap = unit(0.5, "cm"))
+dev.off()
+###信号点图
+table(cellchat@meta[["celltype"]])
+pdf("BUB全.pdf", width = 12, height = 5,bg = "transparent",colormodel = "cmyk")
+netVisual_bubble(cellchat, sources.use = 6, targets.use = c(1:5),  comparison = c(1,2,3,4,5,6,7), angle.x = 45)
+dev.off()
+####展示特定通路的情况
+pathways.show <- c("PTN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  pdf(paste(i,"GRNX全圈.pdf",sep=""), width = 6, height = 5,bg = "transparent",colormodel = "cmyk")
+  netVisual_aggregate(object.list[[i]], signaling = pathways.show, layout = "circle", edge.weight.max = weight.max[1], edge.width.max = 10, signaling.name = paste(pathways.show, names(object.list)[i]))
+  dev.off()
+}
+# Chord diagram
+pathways.show <- c("PTN") 
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  pdf(paste(i,"GRNX全璇.pdf",sep=""), width = 6, height = 5,bg = "transparent",colormodel = "cmyk")
+  netVisual_aggregate(object.list[[i]],  weight.scale = F,signaling = pathways.show, layout = "chord", signaling.name = paste(pathways.show, names(object.list)[i]))
+  dev.off()
+}
+#####
+table(cellchat@meta[["datasets"]])
+cellchat@meta$datasets = factor(cellchat@meta$datasets,levels = c("Saline","E3","D3","E7","E14","D7","D14")) # set factor level
+plotGeneExpression(cellchat, signaling = "PTN", split.by = "datasets")
