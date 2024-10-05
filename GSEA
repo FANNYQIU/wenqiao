@@ -1,0 +1,62 @@
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+sce=MICNC
+marker_group=data.frame()
+Idents(MICNC)="celltype_group"
+for ( ci in c("M0","M1","M2","M3")) {
+  tmp.marker <- FindMarkers(
+    sce, logfc.threshold = 0.5, min.pct = 0.3,
+    only.pos = T, test.use = "wilcox",
+    ident.1=ci
+  )
+  
+  tmp.marker$gene=rownames(tmp.marker)
+  tmp.marker$group=ifelse(tmp.marker$avg_log2FC > 0,paste0(ci),paste0(ci,"_MB"))
+  tmp.marker$celltype=ci
+  tmp.marker=tmp.marker%>%filter(p_val_adj < 0.05)
+  tmp.marker=as.data.frame(tmp.marker)
+  tmp.marker=tmp.marker%>%arrange(desc(avg_log2FC))
+  marker_group=marker_group%>%rbind(tmp.marker)
+}
+write.csv(marker_group,"G:/OneDrive/ICH/NC/CSV/micdeg.csv")
+marker_group <- read.csv("G:/OneDrive/ICH/NC/CSV/micdeg.csv",row.names= 1)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(org.Mm.eg.db)
+marker_group$GENEE=toupper(marker_group$gene)
+ids=bitr(marker_group$GENEE,'SYMBOL','ENTREZID','org.Hs.eg.db') ## 将SYMBOL转成ENTREZID
+marker_group=merge(marker_group,ids,by.x='GENEE',by.y='SYMBOL')
+####KEGG
+gcSample=split(marker_group$ENTREZID, marker_group$celltype) 
+## KEGG
+options(clusterProfiler.download.method = "libcurl")
+
+xx <- compareCluster(gcSample,
+                     fun = "enrichKEGG",
+                     organism = "hsa", pvalueCutoff = 0.05
+)
+
+
+p <- dotplot(xx)
+p + theme(axis.text.x = element_text(
+  angle = 45,
+  vjust = 0.5, hjust = 0.5
+))
+ggsave(,filename =paste("G:/OneDrive/ICH/NC/PDF/MICKEGG.pdf",sep = ""), width = 15, height = 10)
+## GO
+xx <- compareCluster(gcSample,
+                     fun = "enrichGO",
+                     OrgDb = "org.Hs.eg.db",
+                     ont = "BP",
+                     pAdjustMethod = "BH",
+                     pvalueCutoff = 0.01,
+                     qvalueCutoff = 0.05
+)
+p <- dotplot(xx)
+p + theme(axis.text.x = element_text(
+  angle = 45,
+  vjust = 0.5, hjust = 0.5
+))
+ggsave(,filename =paste("G:/OneDrive/ICH/NC/PDF/MICGO.pdf",sep = ""), width = 15, height = 10)
